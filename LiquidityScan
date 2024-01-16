@@ -1,0 +1,135 @@
+
+
+'''
+This code extracts at a fix minute, for each of the 1,000+ underlyings, the option chain data, 
+computes the Open Interest of all contracts, and selects the underlyings by the rules below for 
+liquid option markets:
+    1. The top 100 total Open Interest values > 20,000
+    2. The market price of the underlying > 50.
+
+@author: Zhen Liu
+
+'''
+
+
+import requests
+import pandas as pd 
+import io
+
+pd.set_option('display.max_columns', None)
+pd.set_option('display.max_rows', 10)
+
+ORATS_KEY = "[YOUR ORATS KEY]" 
+
+
+def underlyings():
+    '''
+    Get all current underlyings available at ORATS 
+    '''
+
+    return requests.get("https://s3.amazonaws.com/assets.orats.com/oneMinuteOpraTickers.json").json()
+
+ls_underlyings = underlyings()
+  # ls_underlyings[:20]
+
+
+def options_chain_intraday(ticker, tradeDate=""):
+    '''
+    Get option chain for one underlying at a fixed minute in history
+    '''
+
+    params = {
+        'token' : ORATS_KEY,
+        'ticker': ticker
+    }
+
+    if tradeDate: params["tradeDate"] = tradeDate
+    resp = requests.get(f'https://api.orats.io/datav2/{"hist/" if tradeDate else ""}one-minute/strikes/chain',
+        params = params
+    )
+    
+    return pd.read_csv(io.StringIO(resp.text))
+
+
+def oi_count(chain):
+    '''
+    Compute the Open Interest by options types and the total of the two.
+    '''
+
+    call_oi = chain['callOpenInterest'].sum()
+    put_oi = chain['putOpenInterest'].sum()
+    total_oi = call_oi + put_oi
+
+    return call_oi, put_oi, total_oi
+
+# ======================================
+''' An example of empty return'''
+df_chain = options_chain_intraday(
+    ticker   = "ARE", 
+    tradeDate= "202401121600"  #"202208081000" ### Historical Param
+)
+
+#df_chain.iloc[0,0] == 'Not Found.'
+
+
+# ===========================
+
+
+from tqdm import tqdm
+
+# Set the time
+trade_date = "202401161535" 
+
+# Set the empty dataframe
+df_selected = pd.DataFrame(columns = ['underlying', 'call_OI', 'put_OI', 'total_OI', 'price'])
+
+# Set the minimum threshold for selecting underlyings
+OI_THRESHOLD = 20_000
+
+PRICE_THRESHOLD = 50
+
+#  
+for underlying in tqdm(ls_underlyings[:]):
+    
+    #print(underlying, end = '.')
+
+    
+    
+    df_chain = options_chain_intraday(
+        ticker   = underlying, 
+        tradeDate= trade_date### Historical Param
+        )
+
+    if df_chain.iloc[0,0] == 'Not Found.': continue
+
+      
+    #print(underlying, end = '.')
+    
+    OI_count = oi_count(df_chain)
+        
+
+    stock_price  = df_chain['stockPrice'][0]
+    
+    if OI_count[2] > OI_THRESHOLD and stock_price > PRICE_THRESHOLD:
+        the_dict = {'underlying': underlying, 
+                            'call_OI': OI_count[0],
+                            'put_OI': OI_count[1],
+                            'total_OI': OI_count[2],
+                            'price': stock_price}
+        df1 = pd.DataFrame.from_dict( [the_dict] )
+
+        # print(df1)
+        
+        if df_selected.empty: 
+            df_selected = df1
+        else: 
+            df_selected = pd.concat([df_selected, df1], ignore_index=True)
+
+print("The OI scan is complete.")
+
+# Select the top 100 underlyings by the total Open Interest values.
+
+len(df_selected)
+top_100 = df_selected.sort_values(by = ['total_OI'], ascending = False).head(100)
+top_100 = list(top_100.underlying)#.sort()
+top_100
